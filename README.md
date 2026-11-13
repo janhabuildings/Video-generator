@@ -1,8 +1,8 @@
 # JBI Architectural Media Engine
 
 An API for turning architectural scripts into images, narration, and animated video.
-This first version produces camera movement over images, not geometry-based 3D
-walkthroughs or character animation. It supports 1080p and 4K MP4 exports at 30 fps;
+Supports camera movement over images and opt-in Runway image-to-video generation.
+It does not reconstruct geometry-based 3D walkthroughs. Supports 1080p and 4K MP4 exports at 30 fps;
 4K is an upscaled export, not native 4K source generation.
 
 ## Run locally
@@ -61,7 +61,8 @@ requests. It renders geometric test images and silent WAV files. These are test
 fixtures, not AI architectural imagery or speech.
 
 For actual image and narration generation, set `OPENAI_API_KEY` on the server and
-submit `provider: openai`. These jobs incur provider charges. No live paid generation
+submit `provider: openai` and `allow_paid_generation: true`. Requests without this
+explicit opt-in are rejected before any paid calls. These jobs incur provider charges. No live paid generation
 was used to validate this initial implementation. Model access depends on your account.
 
 | Environment variable | Default |
@@ -71,6 +72,31 @@ was used to validate this initial implementation. Model access depends on your a
 | `OPENAI_API_KEY` | Required for OpenAI jobs |
 | `OPENAI_IMAGE_MODEL` | `gpt-image-2.5-sunburst` |
 | `OPENAI_SPEECH_MODEL` | `gpt-4o-mini-tts` |
+| `RUNWAYML_API_SECRET` | Required for generated animation |
+| `RUNWAY_VIDEO_MODEL` | `seedance2_5` |
+
+### Generated architectural motion
+
+Set `animation: generated` with `provider: openai`, `output: video`, and
+`allow_paid_generation: true`. Both OpenAI and Runway credentials must be configured
+on the server. Images and narration use OpenAI; motion uses Runway. A scene's optional
+`motion_prompt` overrides the default architectural camera direction.
+
+The adapter follows the [Runway image-to-video guide](https://docs.dev.runwayml.com/guides/using-the-api/).
+It submits one five-second 1280×720 clip per scene, polls the task, downloads the
+result, and normalizes it into the requested 1080p or 4K export. These larger exports
+are upscaled. Generated source clips and task metadata are included with completed
+job downloads. Longer narration extends the final frame rather than generating
+additional paid clips; a shorter requested scene trims the generated clip.
+Original provider audio, if any, is replaced by the selected narration.
+
+Task IDs are saved in each job directory before polling. Failed and timed-out tasks
+are never automatically resubmitted. A timeout, download failure, or interrupted
+connection does not cancel a remote task; it may still incur charges. Inspect saved
+task IDs in the provider dashboard before submitting another job. Signed download
+URLs are not persisted. Live provider access and visual quality still require a
+credentialed smoke test. Generative motion can alter building details and is not
+evidence of dimensional or construction accuracy.
 
 Provider contracts: [image generation](https://developers.openai.com/api/reference/resources/images/methods/generate)
 and [speech generation](https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create).
@@ -92,7 +118,7 @@ On restart, incomplete jobs are marked failed, without automatic paid retries.
 Repeated job submissions are independent and can incur duplicate charges. Graceful
 shutdown waits for accepted jobs. Before production, add a durable external worker
 queue, idempotency keys, per-user access and quotas, storage retention, cancellation,
-reference-image controls, and a genuine image-to-video provider for richer motion.
+reference-image controls, and provider task recovery/cancellation.
 The API token grants access to all jobs on the instance; this is not a multi-tenant service.
 
 ## Verification
@@ -104,4 +130,6 @@ python -m unittest discover -s tests -v
 
 Tests exercise script planning, validation, authentication, artifact restrictions,
 and an actual two-scene FFmpeg render, probing the resulting 1920×1080 video and
-audio tracks. Provider-backed generation requires a separate credentialed smoke test.
+audio tracks. Additional tests simulate provider success, failure, and timeout and
+exercise generated-clip assembly with a real local video fixture, including narration
+longer than the source clip. Provider-backed generation requires a separate credentialed smoke test.

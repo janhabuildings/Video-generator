@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .pipeline import Project, execute, plan
+from .motion import MotionError
 
 DATA = Path(os.getenv("ENGINE_DATA_DIR", "data")).resolve()
 LOG = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ def work(job_id: str, project: Project):
     except Exception as error:
         LOG.error("Job %s failed (%s)", job_id, type(error).__name__)
         # Only predictable user/provider errors are exposed; no secrets or paths.
-        message = str(error) if isinstance(error, ValueError) else "Generation failed; check provider access, quota, and renderer installation."
+        message = str(error) if isinstance(error, (ValueError, MotionError)) else "Generation failed; check provider access, quota, and renderer installation."
         update(job_id, status="failed", stage="Failed", error=message)
 
 
@@ -102,6 +103,8 @@ def create_job(project: Project):
         raise HTTPException(422, str(error)) from None
     if project.provider == "openai" and not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(503, "OpenAI provider has not been configured on the server")
+    if project.animation == "generated" and not os.getenv("RUNWAYML_API_SECRET"):
+        raise HTTPException(503, "Runway motion provider has not been configured on the server")
     with gate:
         with database() as connection:
             pending = connection.execute("SELECT count(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0]

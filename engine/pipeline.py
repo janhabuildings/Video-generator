@@ -12,12 +12,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from . import motion
+
 
 class Scene(BaseModel):
     visual: str = Field(min_length=1, max_length=6000)
     narration: str = Field(default="", max_length=4000)
     seconds: float = Field(default=5, ge=2, le=60)
     camera: Literal["push_in", "pull_out", "pan_left", "pan_right"] = "push_in"
+    motion_prompt: str = Field(default="", max_length=800)
 
 
 class Project(BaseModel):
@@ -29,12 +32,18 @@ class Project(BaseModel):
     resolution: Literal["1080p", "4k"] = "1080p"
     output: Literal["video", "images", "audio"] = "video"
     provider: Literal["demo", "openai"] = "demo"
+    animation: Literal["camera", "generated"] = "camera"
+    allow_paid_generation: bool = False
     voice: Literal["alloy", "ash", "coral", "sage", "verse"] = "alloy"
 
     @model_validator(mode="after")
     def require_script(self):
         if not self.scenes and not self.script.strip():
             raise ValueError("Supply a script or at least one scene")
+        if self.provider != "demo" and not self.allow_paid_generation:
+            raise ValueError("Set allow_paid_generation=true to explicitly enable paid provider calls")
+        if self.animation == "generated" and (self.provider == "demo" or self.output != "video"):
+            raise ValueError("Generated animation requires provider=openai and output=video")
         return self
 
 
@@ -137,14 +146,29 @@ def render_scene(image: Path, audio: Path, target: Path, scene: Scene, resolutio
         "-movflags", "+faststart", str(target))
 
 
+def render_motion(source: Path, audio: Path, target: Path, scene: Scene, resolution: str):
+    width, height = (3840, 2160) if resolution == "4k" else (1920, 1080)
+    seconds = math.ceil(max(scene.seconds, duration(audio)) * 30) / 30
+    # A single five-second generation per scene. Freeze the last frame if needed;
+    # never silently generate more paid clips to cover longer narration.
+    filters = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+               f"crop={width}:{height},fps=30,tpad=stop_mode=clone:stop_duration={seconds}")
+    run("ffmpeg", "-v", "error", "-y", "-i", str(source), "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0", "-vf", filters, "-af", "apad",
+        "-t", str(seconds), "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-ar", "48000",
+        "-ac", "2", "-movflags", "+faststart", str(target))
+
+
 def execute(project: Project, directory: Path, progress):
     directory.mkdir(parents=True, exist_ok=True)
     scenes = plan(project)
     manifest = {"project": project.model_dump(), "scenes": [s.model_dump() for s in scenes],
                 "demo": project.provider == "demo", "artifacts": [],
-                "limitations": ["Image camera animation, not a 3D walkthrough",
+                "limitations": ["Concept visualization, not a geometry-verified 3D walkthrough",
                                 "Independent images may differ in building details",
-                                "4K output is upscaled from source images"]}
+                                "HD/4K exports may upscale lower-resolution sources"],
+                "motion_tasks": []}
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for index, scene in enumerate(scenes, 1):
         progress(f"Generating scene {index} of {len(scenes)}", (index-1)/len(scenes))
@@ -156,7 +180,24 @@ def execute(project: Project, directory: Path, progress):
             generate_audio(project, scene, audio)
             manifest["artifacts"].append(audio.name)
         if project.output == "video":
-            render_scene(image, audio, directory / f"clip-{index:03}.mp4", scene, project.resolution)
+            target = directory / f"clip-{index:03}.mp4"
+            if project.animation == "generated":
+                reference = directory / f"reference-{index:03}.jpg"
+                run("ffmpeg", "-v", "error", "-y", "-i", str(image),
+                    "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
+                    "-frames:v", "1", "-q:v", "3", "-threads", "1", str(reference))
+                source = directory / f"motion-{index:03}.mp4"
+                task_file = directory / f"motion-task-{index:03}.json"
+                prompt = scene.motion_prompt or (
+                    f"Slow architectural camera {scene.camera.replace('_', ' ')}. "
+                    "Preserve the building form and materials. Subtle natural environmental motion.")
+                record = motion.generate(reference, source, prompt, task_file,
+                    lambda stage: progress(f"Scene {index}: {stage}", (index-1)/len(scenes)))
+                manifest["motion_tasks"].append(record)
+                manifest["artifacts"].extend([source.name, task_file.name])
+                render_motion(source, audio, target, scene, project.resolution)
+            else:
+                render_scene(image, audio, target, scene, project.resolution)
     if project.output == "video":
         progress("Assembling final video", 0.95)
         # All paths in the concat file are engine-generated relative names.
