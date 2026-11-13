@@ -1,0 +1,22 @@
+{
+  "title": "Brooklyn courtyard residence",
+  "provider": "demo",
+  "output": "video",
+  "resolution": "1080p",
+  "style": "photorealistic",
+  "design_brief": "A three-story Brooklyn residence with warm brick, bronze window frames, limestone entry steps and a landscaped courtyard. Late-afternoon light.",
+  "scenes": [
+    {
+      "visual": "Street-level wide view of the brick facade, showing the limestone entrance and planted setback.",
+      "narration": "A thoughtful addition to the neighborhood, shaped by warm materials and generous daylight.",
+      "seconds": 5,
+      "camera": "push_in"
+    },
+    {
+      "visual": "View across the landscaped courtyard toward the residence, with native planting and a small seating area.",
+      "narration": "A sheltered courtyard creates a quiet place to gather, connecting the home to the outdoors.",
+      "seconds": 5,
+      "camera": "pan_right"
+    }
+  ]
+}
